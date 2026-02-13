@@ -65,7 +65,7 @@ func (p *Provider) GetRecords(ctx context.Context, zone string) ([]libdns.Record
 				nameRel := libdns.RelativeName(rrset.Name, zoneTrim+".")
 				out = append(out, libdns.TXT{
 					Name: nameRel,
-					Text: unquoteTXT(rec.Content),
+					Text: normalizeTXT(rec.Content),
 					TTL:  timeSeconds(rrset.TTL),
 				})
 			}
@@ -89,23 +89,57 @@ func (p *Provider) AppendRecords(ctx context.Context, zone string, recs []libdns
 		return nil, fmt.Errorf("empty zone")
 	}
 
-	// For dns-01 we normally add one TXT value at _acme-challenge.<name>
-	// Use one PATCH per record to keep semantics simple.
 	for _, r := range recs {
 		fqdn, txt, ttl, err := ensureAcmeTXT(zoneTrim, r)
 		if err != nil {
 			return nil, err
 		}
+		txt = normalizeTXT(txt)
+
+		// Check existing rrset values
+		existing, existingTTL, err := p.getExistingTXTValues(ctx, zoneTrim, fqdn)
+		if err != nil {
+			return nil, err
+		}
+
+		if len(existing) == 0 {
+			// rrset doesn't exist -> ADD
+			sets := []UpdateRRSet{{
+				Name:       fqdn,
+				Type:       "TXT",
+				TTL:        ttl,
+				ChangeType: changeTypeAdd,
+				Records: []Record{{
+					Content:  txt,
+					Disabled: false,
+				}},
+			}}
+
+			if _, err := p.client.PatchRRsets(ctx, zoneTrim, sets); err != nil {
+				return nil, err
+			}
+			continue
+		}
+
+		// rrset exists -> UPDATE with merged set
+		existing[txt] = true
+
+		merged := make([]Record, 0, len(existing))
+		for v := range existing {
+			merged = append(merged, Record{Content: v, Disabled: false})
+		}
+
+		ttlToUse := ttl
+		if existingTTL > 0 {
+			ttlToUse = existingTTL
+		}
 
 		sets := []UpdateRRSet{{
 			Name:       fqdn,
 			Type:       "TXT",
-			TTL:        ttl,
-			ChangeType: changeTypeAdd,
-			Records: []Record{{
-				Content:  txt,
-				Disabled: false,
-			}},
+			TTL:        ttlToUse,
+			ChangeType: changeTypeUpdate,
+			Records:    merged,
 		}}
 
 		if _, err := p.client.PatchRRsets(ctx, zoneTrim, sets); err != nil {
@@ -130,7 +164,11 @@ func (p *Provider) DeleteRecords(ctx context.Context, zone string, recs []libdns
 		if err != nil {
 			return nil, err
 		}
+		txt = normalizeTXT(txt)
 
+		// IMPORTANT:
+		// Remove exactly this TXT value using changetype=delete with records payload.
+		// Do NOT rely on changetype=update to remove a missing value (it doesn't work here).
 		sets := []UpdateRRSet{{
 			Name:       fqdn,
 			Type:       "TXT",

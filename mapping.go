@@ -26,6 +26,10 @@ func unquoteTXT(s string) string {
     return s
 }
 
+func normalizeTXT(s string) string {
+    return unquoteTXT(strings.TrimSpace(s))
+}
+
 func ensureAcmeTXT(zone string, r libdns.Record) (fqdn string, txt string, ttlSec int, err error) {
 	zoneFQDN := strings.TrimSuffix(strings.TrimSpace(zone), ".") + "."
 	if zoneFQDN == "." {

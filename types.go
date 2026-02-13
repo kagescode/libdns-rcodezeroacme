@@ -42,5 +42,6 @@ type RRSet struct {
 
 const (
 	changeTypeAdd    = "add"
+	changeTypeUpdate = "update"
 	changeTypeDelete = "delete"
 )
