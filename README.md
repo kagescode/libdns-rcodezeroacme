@@ -4,30 +4,40 @@ ACME-only DNS provider for **RcodeZero** using the **libdns** interfaces.
 
 This provider is intentionally minimal and only supports the DNS operations required for **ACME DNS-01 challenges**.
 
+It uses the dedicated RcodeZero ACME endpoint and does **not** implement full DNS management.
+
 ---
 
 ## Features
 
-- Implements the libdns provider interfaces for ACME usage
-- Supports creating and removing DNS-01 TXT challenge records
-- Uses the dedicated RcodeZero ACME endpoint
+* Implements libdns interfaces required for ACME DNS-01
+* Creates and removes `_acme-challenge` TXT records
+* Uses the dedicated RcodeZero ACME API endpoint
+* Designed for predictable ACME automation
+* Integration test suite included
 
-Endpoint used:
+---
 
-- PATCH /api/v1/acme/zones/{zone}/rrsets
-- GET   /api/v1/acme/zones/{zone}/rrsets
+## API Endpoint Used
 
-See the official RcodeZero OpenAPI specification:
+The provider uses the ACME endpoint:
 
-https://my.rcodezero.at/openapi/
+* `PATCH /api/v1/acme/zones/{zone}/rrsets`
+* `GET   /api/v1/acme/zones/{zone}/rrsets`
+
+Official OpenAPI specification:
+
+[https://my.rcodezero.at/openapi/](https://my.rcodezero.at/openapi/)
 
 ---
 
 ## Authentication
 
-Authentication is done using an HTTP Bearer token:
+Authentication is performed using an HTTP Bearer token:
 
+```
 Authorization: Bearer <TOKEN>
+```
 
 The token must have permission to manage ACME challenge records for the zone.
 
@@ -35,47 +45,108 @@ The token must have permission to manage ACME challenge records for the zone.
 
 ## Supported Records
 
-This provider is ACME-only and supports:
+This provider is strictly ACME-only.
 
-- Record type: TXT
-- Name must start with: _acme-challenge
+Supported:
 
-All other record types or names will fail immediately.
+* Record type: `TXT`
+* Name must start with `_acme-challenge`
 
 Accepted names:
 
-- _acme-challenge
-- _acme-challenge.sub
+* `_acme-challenge`
+* `_acme-challenge.servera`
+* `_acme-challenge.subdomain`
 
-Rejected names:
+Rejected immediately:
 
-- www
-- mail
-- any A, AAAA, CNAME, MX, etc.
+* `A`, `AAAA`, `CNAME`, `MX`, etc.
+* `www`
+* `mail`
+* Any non `_acme-challenge` name
+
+Attempts to manage unsupported records will fail fast.
+
+---
+
+## ACME Behavior and Concurrency
+
+### Important: Behavior Depends on FQDN
+
+### Safe Scenario (No Collision)
+
+If different hosts request certificates:
+
+* `_acme-challenge.servera.example.com`
+* `_acme-challenge.serverb.example.com`
+
+These are **different rrsets**.
+
+No collision occurs.
+Concurrent validations are safe.
+
+This is the most common real-world scenario.
+
+---
+
+### Collision Scenario (Same FQDN)
+
+If multiple issuers request validation for:
+
+* `example.com`
+* `*.example.com`
+* the same hostname simultaneously
+
+They will all use:
+
+```
+_acme-challenge.example.com
+```
+
+The RcodeZero ACME endpoint does **not support safe per-value deletion**.
+
+Current endpoint behavior:
+
+* `update` writes the TXT rrset (single value semantics)
+* `delete` removes the whole rrset
+
+Therefore:
+
+* Multiple concurrent validations for the same `_acme-challenge.<name>` are **not safe**
+* External locking or a single issuer is required
+
+This matches the behavior of:
+
+* lego’s rcodezero provider
+* cert-manager webhook implementation
 
 ---
 
 ## Limitations
 
-### Multi-value TXT records are NOT supported
-
-The RcodeZero ACME endpoint does not allow multiple TXT values for the same rrset.
-
-If a TXT record already exists, adding another value will fail with an error like:
-
-RRset '_acme-challenge.<zone>. TXT' already exists, could not add additional
-
-This matches the ACME endpoint behavior and is intentionally not worked around.
-
-### No non-ACME record management
+### No Full DNS Management
 
 This provider does NOT support:
 
-- Managing A/AAAA/CNAME/MX records
-- Updating arbitrary zone records
-- Full DNS provider semantics
+* A / AAAA / CNAME / MX records
+* Arbitrary zone management
+* Non-ACME DNS operations
 
-It is strictly designed for ACME DNS-01 challenge automation.
+For full DNS record management, use the RcodeZero v2 API instead.
+
+---
+
+### Concurrent Validation on Same Name
+
+If multiple ACME clients validate the same hostname simultaneously:
+
+* One may overwrite the other's TXT record
+* Cleanup may remove records still required by another client
+
+Recommended approach:
+
+* Use a single ACME issuer per domain
+* Or ensure shared locking/storage between HA instances
 
 ---
 
@@ -102,41 +173,37 @@ func main() {
 	ctx := context.Background()
 	zone := "example.com."
 
-	records := []libdns.Record{
-		libdns.TXT{
-			Name: "_acme-challenge",
-			Text: "challenge-token-value",
-			TTL:  60 * time.Second,
-		},
+	record := libdns.TXT{
+		Name: "_acme-challenge",
+		Text: "challenge-token-value",
+		TTL:  60 * time.Second,
 	}
 
-	// Present ACME TXT challenge
-	_, err := provider.AppendRecords(ctx, zone, records)
+	// Present challenge
+	_, err := provider.AppendRecords(ctx, zone, []libdns.Record{record})
 	if err != nil {
 		panic(err)
 	}
 
 	fmt.Println("TXT challenge record created")
 
-	// Cleanup afterwards
-	_, err = provider.DeleteRecords(ctx, zone, records)
+	// Cleanup
+	_, err = provider.DeleteRecords(ctx, zone, []libdns.Record{record})
 	if err != nil {
 		panic(err)
 	}
 
 	fmt.Println("TXT challenge record removed")
 }
-````
+```
 
 ---
 
 ## Running Tests
 
-### Compile + Unit Tests
+### Compile & Static Checks
 
-Run:
-
-```bash
+```
 go test ./...
 go vet ./...
 ```
@@ -145,56 +212,54 @@ go vet ./...
 
 ## Integration Tests
 
-Integration tests require a real zone and an API token.
+Integration tests require a real zone and API token.
 
-### Environment Variables
+### Required Environment Variables
 
-Set:
-
-```bash
+```
 export LIBDNSTEST_ZONE="example.com."
 export LIBDNSTEST_API_TOKEN="YOUR_TOKEN"
 export LIBDNSTEST_BASE_URL="https://my.rcodezero.at"
 ```
 
-### Run integration suite
+### Run Integration Tests
 
-```bash
+```
 go test ./libdnstest -v
 ```
 
-Integration tests verify:
+The integration suite verifies:
 
-* TXT record creation under _acme-challenge
-* Record cleanup after challenge completion
-* Correct failure on unsupported multi-value rrsets
+* TXT record creation under `_acme-challenge`
+* Record cleanup
+* Multiple FQDN validation without collision
+* Correct behavior under ACME endpoint semantics
 
 ---
 
-## CI
+## CI Recommendation
 
-A GitHub Actions workflow is recommended to ensure:
-
-* provider always compiles
-* unit tests stay green
-
-Minimal CI steps:
+Minimal GitHub Actions workflow:
 
 ```yaml
-go test ./...
-go vet ./...
+name: Go
+
+on: [push, pull_request]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+      - run: go test ./...
+      - run: go vet ./...
 ```
-
----
-
-## License
-
-MIT
 
 ---
 
 ## Disclaimer
 
-This provider is designed only for ACME DNS-01 automation.
-
-For full DNS record management, use the RcodeZero v2 API instead.
+This provider is intentionally ACME-only and minimal.
