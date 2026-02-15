@@ -1,0 +1,52 @@
+# ---- Go build artifacts ----
+*.exe
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+*.a
+
+# Go coverage
+coverage.out
+cover.out
+*.coverprofile
+
+# Go workspace (if used)
+go.work
+go.work.sum
+
+# Binaries commonly produced
+caddy
+caddy.exe
+xcaddy
+xcaddy.exe
+
+# Build dirs
+bin/
+dist/
+build/
+out/
+
+# ---- OS / editor junk ----
+.DS_Store
+Thumbs.db
+
+# Editor/IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ---- Logs ----
+*.log
+
+# ---- Docker local stuff ----
+.docker/
+docker-compose.override.yml
+
+# ---- Test temp dirs (if you create any on purpose) ----
+.tmp/
+tmp/
+
